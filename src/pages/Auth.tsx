@@ -1,0 +1,356 @@
+import nekoPawLogo from '@/assets/Logo/NekoPaw.png';
+import loginSound from '@/assets/sounds/login.wav';
+import { Alert, AlertDescription } from '@/components/ui/alert';
+import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
+import { Button } from '@/components/ui/button';
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from '@/components/ui/card';
+import { Separator } from '@/components/ui/separator';
+import { Chrome, Github } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { DownloadProofModal } from '../components/DownloadProofModal';
+import { DiscordIcon } from '../components/ui/icons/DiscordIcon';
+import { SpotifyIcon } from '../components/ui/icons/SpotifyIcon';
+import { useAuth } from '../contexts/AuthContext';
+import {
+  DisplayNameField,
+  EmailField,
+  PasswordField,
+  UsernameField,
+} from '../contexts/AuthFormFields';
+import { generateAndDownloadProofFile } from '../lib/utils';
+
+export function Auth() {
+  const {
+    addAccount,
+    signUp,
+    resetPassword,
+    addAccountWithOAuth,
+    user,
+    accounts,
+    signOut,
+  } = useAuth();
+  const navigate = useNavigate();
+  const [isLogin, setIsLogin] = useState(true);
+  const [showPassword, setShowPassword] = useState(false);
+  const [formData, setFormData] = useState({
+    username: '',
+    email: '',
+    password: '',
+    confirmPassword: '',
+    displayName: '',
+  });
+  const [errors, setErrors] = useState<Record<string, string>>({});
+  const [isLoading, setIsLoading] = useState(false);
+  const [showDownloadModal, setShowDownloadModal] = useState(false);
+  const [registeredEmail, setRegisteredEmail] = useState<string | null>(null);
+  const [showAccountSelection, setShowAccountSelection] = useState(false);
+
+  useEffect(() => {
+    if (user) {
+      navigate('/');
+    } else if (accounts.length > 0) {
+      setShowAccountSelection(true);
+    } else {
+      setShowAccountSelection(false);
+    }
+  }, [user, accounts, navigate]);
+
+  const handleAccountSelect = (account: any) => {
+    setFormData((prev) => ({
+      ...prev,
+      email: account.user.email || '',
+      password: '',
+    }));
+    setShowAccountSelection(false);
+  };
+
+  const validateForm = () => {
+    const newErrors: Record<string, string> = {};
+    if (!formData.email) {
+      newErrors.email = 'Email is required';
+    } else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(formData.email)) {
+      newErrors.email = 'Please enter a valid email address';
+    } else if (!formData.email.toLowerCase().endsWith('@gmail.com')) {
+      newErrors.email = 'Only Gmail addresses are allowed';
+    }
+    if (!formData.password) {
+      newErrors.password = 'Password is required';
+    } else if (formData.password.length < 8) {
+      newErrors.password = 'Password must be at least 8 characters';
+    } else if (!/[A-Z]/.test(formData.password)) {
+      newErrors.password = 'Password must contain at least one uppercase letter';
+    } else if (!/[a-z]/.test(formData.password)) {
+      newErrors.password = 'Password must contain at least one lowercase letter';
+    } else if (!/[0-9]/.test(formData.password)) {
+      newErrors.password = 'Password must contain at least one number';
+    }
+    if (!isLogin) {
+      if (!formData.username) {
+        newErrors.username = 'Username is required';
+      } else if (formData.username.length < 3) {
+        newErrors.username = 'Username must be at least 3 characters';
+      } else if (formData.username.length > 20) {
+        newErrors.username = 'Username must be less than 20 characters';
+      } else if (!/^[a-zA-Z0-9_]+$/.test(formData.username)) {
+        newErrors.username = 'Username can only contain letters, numbers, and underscores';
+      }
+      if (!formData.displayName) {
+        newErrors.displayName = 'Display name is required';
+      } else if (formData.displayName.length < 2) {
+        newErrors.displayName = 'Display name must be at least 2 characters';
+      } else if (formData.displayName.length > 50) {
+        newErrors.displayName = 'Display name must be less than 50 characters';
+      }
+      if (!formData.confirmPassword) {
+        newErrors.confirmPassword = 'Please confirm your password';
+      } else if (formData.password !== formData.confirmPassword) {
+        newErrors.confirmPassword = "Passwords don't match";
+      }
+    }
+    setErrors(newErrors);
+    return Object.keys(newErrors).length === 0;
+  };
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!validateForm()) return;
+    setIsLoading(true);
+    try {
+      const { error } = isLogin
+        ? await addAccount(formData.email, formData.password)
+        : await signUp(formData.email, formData.password, formData.username, formData.displayName);
+      if (error) {
+        setErrors({ general: error.message });
+      } else {
+        if (!isLogin) {
+          alert('Sign up successful! Please check your email to verify your account.');
+          setIsLogin(true);
+        } else if (isLogin) {
+          new Audio(loginSound).play();
+          setTimeout(() => navigate('/'), 500);
+        }
+      }
+    } catch {
+      setErrors({ general: 'Authentication failed. Please try again.' });
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const validateField = (name: string, value: string, currentData = formData) => {
+    if (!value) return '';
+    switch (name) {
+      case 'email':
+        if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)) return 'Please enter a valid email address';
+        if (!value.toLowerCase().endsWith('@gmail.com')) return 'Only Gmail addresses are allowed';
+        return '';
+      case 'password':
+        if (value.length < 8) return 'Password must be at least 8 characters';
+        if (!/[A-Z]/.test(value)) return 'Password must contain at least one uppercase letter';
+        if (!/[a-z]/.test(value)) return 'Password must contain at least one lowercase letter';
+        if (!/[0-9]/.test(value)) return 'Password must contain at least one number';
+        return '';
+      case 'username':
+        if (!isLogin && value.length < 3) return 'Username must be at least 3 characters';
+        if (!isLogin && value.length > 20) return 'Username must be less than 20 characters';
+        if (!isLogin && !/^[a-zA-Z0-9_]+$/.test(value)) return 'Username can only contain letters, numbers, and underscores';
+        return '';
+      case 'displayName':
+        if (!isLogin && value.length < 2) return 'Display name must be at least 2 characters';
+        if (!isLogin && value.length > 30) return 'Display name must be less than 50 characters';
+        return '';
+      case 'confirmPassword':
+        if (!isLogin && currentData.password !== value) return "Passwords don't match";
+        return '';
+      default:
+        return '';
+    }
+  };
+
+  const handleInputChange = (field: string, value: string) => {
+    const updatedFormData = { ...formData, [field]: value };
+    setFormData(updatedFormData);
+    const error = validateField(field, value, updatedFormData);
+    setErrors((prev) => ({ ...prev, [field]: error }));
+  };
+
+  const handleForgotPassword = () => {
+    navigate('/auth/forgot-password');
+  };
+
+  const handleOAuthSignIn = async (provider: 'google' | 'github' | 'discord' | 'spotify') => {
+    setIsLoading(true);
+    await addAccountWithOAuth(provider);
+  };
+
+  const toggleForm = () => {
+    setIsLogin(!isLogin);
+    setErrors({});
+    setFormData({ username: '', email: '', password: '', confirmPassword: '', displayName: '' });
+  };
+
+  const handleDownloadConfirm = () => {
+    if (registeredEmail) {
+      generateAndDownloadProofFile(registeredEmail);
+      setShowDownloadModal(false);
+      navigate('/');
+    }
+  };
+
+  const getTitle = () => {
+    if (showAccountSelection) return 'Choose an account';
+    if (isLogin) return user ? 'Add another account' : 'Sign In';
+    return 'Create an account';
+  };
+
+  return (
+    <div className="min-h-screen w-full lg:grid lg:grid-cols-2 bg-background">
+      {/* Left Panel - Hero */}
+      <div className="hidden bg-primary/5 lg:flex flex-col items-center justify-center p-12 text-center relative overflow-hidden">
+        {/* Decorative paw prints */}
+        <div className="absolute top-10 left-10 text-6xl opacity-10 rotate-[-20deg]">🐾</div>
+        <div className="absolute bottom-20 right-16 text-5xl opacity-10 rotate-[15deg]">🐾</div>
+        <div className="absolute top-1/3 right-10 text-4xl opacity-10 rotate-[45deg]">🐾</div>
+        
+        <img src={nekoPawLogo} alt="NekoPaw Logo" className="w-48 mb-6 drop-shadow-lg" />
+        <h1 className="text-4xl font-bold text-primary">Welcome to NekoPaw</h1>
+        <p className="mt-4 text-lg text-muted-foreground">
+          A purrfect way to connect with the world 🐱
+        </p>
+        <p className="mt-2 text-sm text-muted-foreground/70">
+          Share moments, make friends, have fun~
+        </p>
+      </div>
+
+      {/* Right Panel - Form */}
+      <div className="flex items-center justify-center py-12 px-4 relative">
+        <div className="w-full max-w-md space-y-6">
+          <div className="text-center lg:hidden">
+            <img src={nekoPawLogo} alt="NekoPaw Logo" className="w-24 mx-auto mb-4" />
+            <p className="text-sm text-muted-foreground">🐾 NekoPaw</p>
+          </div>
+
+          {showAccountSelection && (
+            <Card className="border-none shadow-none sm:border sm:shadow-sm mb-4">
+              <CardHeader className="text-center">
+                <CardTitle className="text-2xl">Choose an account</CardTitle>
+                <CardDescription>Select an account to continue.</CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="grid grid-cols-1 gap-3">
+                  {accounts.map((account) => (
+                    <div key={account.user.id} className="flex items-center justify-between p-3 border rounded-lg hover:bg-muted/50 transition-colors">
+                      <div className="flex items-center gap-4 cursor-pointer flex-1 min-w-0" onClick={() => handleAccountSelect(account)}>
+                        <Avatar className="h-12 w-12">
+                          <AvatarImage src={account.user.user_metadata?.avatar_url} alt={account.user.user_metadata?.display_name || account.user.email} />
+                          <AvatarFallback>{account.user.email?.substring(0, 2).toUpperCase()}</AvatarFallback>
+                        </Avatar>
+                        <div className="flex-1 min-w-0">
+                          <p className="font-semibold truncate">{account.user.user_metadata?.display_name || account.user.email}</p>
+                          <p className="text-sm text-muted-foreground truncate">{account.user.email}</p>
+                        </div>
+                      </div>
+                      <Button variant="ghost" size="sm" onClick={() => signOut(account.user.id)}>Remove</Button>
+                    </div>
+                  ))}
+                </div>
+                <Separator />
+                <Button variant="secondary" className="w-full" onClick={() => { setShowAccountSelection(false); setFormData({ username: '', email: '', password: '', confirmPassword: '', displayName: '' }); }}>
+                  Login with another account
+                </Button>
+              </CardContent>
+            </Card>
+          )}
+
+          {!showAccountSelection && (
+            <Card className="border-none shadow-none sm:border sm:shadow-sm">
+              <CardHeader className="text-center">
+                <CardTitle className="text-2xl">{getTitle()}</CardTitle>
+                <CardDescription>
+                  {isLogin ? 'Enter your credentials to sign in.' : 'Fill in the details to create your account.'}
+                </CardDescription>
+              </CardHeader>
+
+              <CardContent className="space-y-4">
+                {errors.general && (
+                  <Alert variant="destructive">
+                    <AlertDescription>{errors.general}</AlertDescription>
+                  </Alert>
+                )}
+
+                <form onSubmit={handleSubmit} className="space-y-4">
+                  {!isLogin && (
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                      <DisplayNameField value={formData.displayName} onChange={(e) => handleInputChange('displayName', e.target.value)} error={errors.displayName} />
+                      <UsernameField value={formData.username} onChange={(e) => handleInputChange('username', e.target.value.replace(/[^a-zA-Z0-9_]/g, '').toLowerCase())} error={errors.username} />
+                    </div>
+                  )}
+                  <div className={`grid grid-cols-1 ${!isLogin ? 'sm:grid-cols-2' : ''} gap-4`}>
+                    <EmailField value={formData.email} onChange={(e) => handleInputChange('email', e.target.value)} error={errors.email} />
+                    {!isLogin && <div></div>}
+                  </div>
+                  <div className={`grid grid-cols-1 ${!isLogin ? 'sm:grid-cols-2' : ''} gap-4`}>
+                    <PasswordField id="password" label="Password" value={formData.password} onChange={(e) => handleInputChange('password', e.target.value)} error={errors.password} showPassword={showPassword} toggleShowPassword={() => setShowPassword(!showPassword)} />
+                    {!isLogin && (
+                      <PasswordField id="confirmPassword" label="Confirm Password" value={formData.confirmPassword} onChange={(e) => handleInputChange('confirmPassword', e.target.value)} error={errors.confirmPassword} />
+                    )}
+                  </div>
+                  {!isLogin && (
+                    <p className="text-sm text-muted-foreground">Password must be at least 8 characters.</p>
+                  )}
+                  <Button type="submit" className="w-full gradient-button" disabled={isLoading}>
+                    {isLoading ? 'Please wait...' : isLogin ? user ? 'Add Account' : 'Sign In' : 'Create Account'}
+                  </Button>
+                </form>
+
+                <div className="relative">
+                  <div className="absolute inset-0 flex items-center"><span className="w-full border-t" /></div>
+                  <div className="relative flex justify-center text-xs uppercase">
+                    <span className="bg-card px-2 text-muted-foreground">Or continue with</span>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-4">
+                  <Button variant="outline" onClick={() => handleOAuthSignIn('google')} disabled={isLoading}>
+                    <Chrome className="mr-2 h-4 w-4" /> Google
+                  </Button>
+                  <Button variant="outline" onClick={() => handleOAuthSignIn('github')} disabled={isLoading}>
+                    <Github className="mr-2 h-4 w-4" /> GitHub
+                  </Button>
+                  <Button variant="outline" onClick={() => handleOAuthSignIn('discord')} disabled={isLoading}>
+                    <DiscordIcon className="mr-2 h-4 w-4" /> Discord
+                  </Button>
+                  <Button variant="outline" onClick={() => handleOAuthSignIn('spotify')} disabled={isLoading}>
+                    <SpotifyIcon className="mr-2 h-4 w-4" /> Spotify
+                  </Button>
+                </div>
+
+                {isLogin && (
+                  <Button variant="link" onClick={handleForgotPassword} className="w-full text-primary">
+                    Forgot your password?
+                  </Button>
+                )}
+
+                <div className="text-center text-sm">
+                  {isLogin ? "Don't have an account? " : 'Already have an account? '}
+                  <Button variant="link" onClick={toggleForm} className="text-primary p-0">
+                    {isLogin ? 'Sign Up' : 'Sign In'}
+                  </Button>
+                </div>
+              </CardContent>
+            </Card>
+          )}
+        </div>
+      </div>
+
+      <DownloadProofModal isOpen={showDownloadModal} onClose={() => setShowDownloadModal(false)} onConfirmDownload={handleDownloadConfirm} />
+    </div>
+  );
+}

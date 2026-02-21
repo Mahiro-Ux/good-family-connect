@@ -1,0 +1,583 @@
+import { Navigation } from '@/components/layout/Navigation';
+import { PostDetailModal } from '@/components/posts/PostDetailModal';
+import { PostGrid } from '@/components/posts/PostGrid';
+import { FollowListModal } from '@/components/profile/FollowListModal';
+import { ProfileMenu } from '@/components/profile/ProfileMenu';
+import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import { Card } from '@/components/ui/card';
+import { getSocialColor, getSocialIcon } from '@/components/ui/icons/SocialIcons';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { useAuth } from '@/contexts/AuthContext';
+import { useBookmarkedPosts } from '@/hooks/useBookmarkedPosts';
+import { useCreateConversation } from '@/hooks/useConversations';
+import { useFollowStatus, useToggleFollow } from '@/hooks/useFollow';
+import { useLikedPosts } from '@/hooks/useLikedPosts';
+import { Post, useUserPosts } from '@/hooks/usePosts';
+import { useProfile, useUpdateProfile } from '@/hooks/useProfile';
+import { supabase } from '@/integrations/supabase/client';
+import { useQueryClient } from '@tanstack/react-query';
+import { format } from 'date-fns';
+import {
+  Bookmark,
+  Calendar,
+  Camera,
+  Grid3X3,
+  Heart,
+  Link as LinkIcon,
+  Lock,
+  MapPin,
+  MessageCircle,
+} from 'lucide-react';
+import { useRef, useState } from 'react';
+import { Link, useNavigate, useParams } from 'react-router-dom';
+import { toast } from 'sonner';
+import { useQuery } from '@tanstack/react-query';
+
+// Component to fetch real follower/following counts - only counts users with existing profiles
+const ProfileStats = ({ userId, postsCount, onClickFollowers, onClickFollowing }: { userId: string; postsCount: number; onClickFollowers: () => void; onClickFollowing: () => void }) => {
+  const { data: actualCounts } = useQuery({
+    queryKey: ['actual-follow-counts', userId],
+    queryFn: async () => {
+      // Get follower IDs
+      const { data: followerRows } = await supabase
+        .from('followers')
+        .select('follower_id')
+        .eq('following_id', userId);
+      
+      // Get following IDs
+      const { data: followingRows } = await supabase
+        .from('followers')
+        .select('following_id')
+        .eq('follower_id', userId);
+
+      const followerIds = (followerRows || []).map(r => r.follower_id);
+      const followingIds = (followingRows || []).map(r => r.following_id);
+
+      // Verify which IDs have existing profiles
+      let followersWithProfiles = 0;
+      let followingWithProfiles = 0;
+
+      if (followerIds.length > 0) {
+        const { data: fp } = await supabase
+          .from('profiles')
+          .select('user_id')
+          .in('user_id', followerIds);
+        followersWithProfiles = fp?.length || 0;
+      }
+
+      if (followingIds.length > 0) {
+        const { data: fp } = await supabase
+          .from('profiles')
+          .select('user_id')
+          .in('user_id', followingIds);
+        followingWithProfiles = fp?.length || 0;
+      }
+
+      return { followers: followersWithProfiles, following: followingWithProfiles };
+    },
+    enabled: !!userId,
+  });
+
+  return (
+    <div className="flex items-center space-x-6 pt-2">
+      <div className="text-center">
+        <p className="font-bold text-lg">{postsCount.toLocaleString()}</p>
+        <p className="text-sm text-muted-foreground">Posts</p>
+      </div>
+      <div className="text-center cursor-pointer hover:text-primary transition-colors" onClick={onClickFollowers}>
+        <p className="font-bold text-lg">{(actualCounts?.followers ?? 0).toLocaleString()}</p>
+        <p className="text-sm text-muted-foreground">Followers</p>
+      </div>
+      <div className="text-center cursor-pointer hover:text-primary transition-colors" onClick={onClickFollowing}>
+        <p className="font-bold text-lg">{(actualCounts?.following ?? 0).toLocaleString()}</p>
+        <p className="text-sm text-muted-foreground">Following</p>
+      </div>
+    </div>
+  );
+};
+
+const ProfilePageContent = ({ profile, isLoading, error }) => {
+  const { user: authUser } = useAuth();
+  const { mutateAsync: updateProfileMutate } = useUpdateProfile();
+  const queryClient = useQueryClient();
+  const navigate = useNavigate();
+  const [selectedPost, setSelectedPost] = useState<Post | null>(null);
+  const [followListType, setFollowListType] = useState<
+    'followers' | 'following' | null
+  >(null);
+  const coverInputRef = useRef<HTMLInputElement>(null);
+  const avatarInputRef = useRef<HTMLInputElement>(null);
+  const { mutate: createConversation } = useCreateConversation();
+
+  const { data: posts, isLoading: postsLoading } = useUserPosts(
+    profile?.user_id
+  );
+  const { data: isFollowing = false, isLoading: followLoading } =
+    useFollowStatus(profile?.user_id || '');
+  const { mutate: toggleFollow } = useToggleFollow();
+
+  // Liked and Bookmarked posts
+  const { data: likedPosts = [], isLoading: likedLoading } = useLikedPosts(profile?.user_id);
+  const { data: bookmarkedPosts = [], isLoading: bookmarkedLoading } = useBookmarkedPosts(profile?.user_id);
+
+  const pageLoading = isLoading || postsLoading || followLoading || likedLoading || bookmarkedLoading;
+
+  if (pageLoading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <p>Loading profile...</p>
+      </div>
+    );
+  }
+
+  if (error || !profile) {
+    return (
+      <div className="min-h-screen flex flex-col items-center justify-center text-center p-4">
+        <p className="text-xl font-semibold text-red-500">Error</p>
+        <p className="text-muted-foreground">
+          {error?.message || 'Profile not found.'}
+        </p>
+      </div>
+    );
+  }
+
+  const userPosts: (Post & { timestamp: string })[] = posts
+    ? posts.map((post) => ({
+      ...post,
+      timestamp: format(new Date(post.created_at), 'PP'),
+    }))
+    : [];
+
+  const isOwnProfile = authUser?.id === profile?.user_id;
+  const showContent = !profile.is_private || isOwnProfile || isFollowing;
+
+  const updateProfile = async (updates: Partial<any>) => {
+    try {
+      await updateProfileMutate(updates);
+    } catch (err) {
+      console.error('Failed to update profile', err);
+    }
+  };
+
+  return (
+    <div className="min-h-screen bg-background">
+      <Navigation />
+
+      <main className="md:ml-64 min-h-screen pb-24 sm:pb-20 md:pb-8">
+        <div className="max-w-4xl mx-auto px-4 py-8">
+          {/* Profile Header */}
+          <Card className="mb-6 overflow-hidden animate-fade-in">
+            {/* Cover Image */}
+            <div className="h-48 md:h-64 relative overflow-hidden">
+              <img
+                src={
+                  profile.cover_img ||
+                  profile.avatar_url ||
+                  'src/assets/Place/cewek.png'
+                }
+                alt="Cover"
+                className="w-full h-full object-cover"
+              />
+              <div className="absolute inset-0 bg-gradient-to-t from-black/50 to-transparent" />
+              {/* Cover edit button */}
+              {authUser && (
+                <div className="absolute right-4 bottom-4">
+                  <input
+                    ref={coverInputRef}
+                    id="cover-upload"
+                    type="file"
+                    accept="image/*"
+                    className="hidden"
+                    onChange={async (e) => {
+                      const file = e.target.files?.[0];
+                      if (!file || !authUser) return;
+
+                      const localImageUrl = URL.createObjectURL(file);
+                      queryClient.setQueryData(
+                        ['profile', authUser.id],
+                        (oldData: any) =>
+                          oldData
+                            ? { ...oldData, cover_img: localImageUrl }
+                            : oldData
+                      );
+
+                      try {
+                        const ext = file.name.split('.').pop();
+                        const filePath = `${authUser.id}/cover-${Date.now()}.${ext}`;
+                        const { error: uploadErr } = await supabase.storage
+                          .from('avatars')
+                          .upload(filePath, file, { upsert: true });
+                        if (uploadErr) throw uploadErr;
+                        await updateProfile({ cover_img: filePath });
+                        // Invalidate query to fetch fresh data with new signed URL
+                        await queryClient.invalidateQueries({
+                          queryKey: ['profile', authUser.id],
+                        });
+                        toast.success('Cover updated successfully!');
+                      } catch (err) {
+                        console.error('Cover upload failed', err);
+                        toast.error('Failed to upload cover');
+                        queryClient.invalidateQueries({
+                          queryKey: ['profile', authUser.id],
+                        });
+                      } finally {
+                        URL.revokeObjectURL(localImageUrl);
+                        if (e.target) {
+                          (e.target as HTMLInputElement).value = '';
+                        }
+                      }
+                    }}
+                  />
+                  <Button
+                    variant="outline"
+                    size="icon"
+                    onClick={() => coverInputRef.current?.click()}
+                  >
+                    <Camera className="h-4 w-4" />
+                  </Button>
+                </div>
+              )}
+            </div>
+
+            {/* Profile Info */}
+            <div className="p-6">
+              <div className="flex flex-col md:flex-row md:items-end md:justify-between -mt-20 md:-mt-16">
+                {/* Avatar & Basic Info */}
+                <div className="flex flex-col md:flex-row md:items-end md:space-x-6">
+                  <div className="relative inline-block">
+                    <Avatar className="h-32 w-32 border-4 border-background shadow-xl">
+                      <AvatarImage
+                        src={profile.avatar_url || 'src/assets/Place/cewek.png'}
+                        alt={profile.display_name}
+                      />
+                      <AvatarFallback className="text-2xl">
+                        {profile.display_name?.charAt(0) ||
+                          profile.username?.charAt(0) ||
+                          ''}
+                      </AvatarFallback>
+                    </Avatar>
+
+                    {/* Avatar edit (only for own profile) */}
+                    {isOwnProfile && authUser && (
+                      <div className="absolute right-0 bottom-0">
+                        <input
+                          ref={avatarInputRef}
+                          id="avatar-upload"
+                          type="file"
+                          accept="image/*"
+                          className="hidden"
+                          onChange={async (e) => {
+                            const file = e.target.files?.[0];
+                            if (!file || !authUser) return;
+
+                            const localImageUrl = URL.createObjectURL(file);
+                            queryClient.setQueryData(
+                              ['profile', authUser.id],
+                              (oldData: any) =>
+                                oldData
+                                  ? { ...oldData, avatar_url: localImageUrl }
+                                  : oldData
+                            );
+
+                            try {
+                              const ext = file.name.split('.').pop();
+                              const filePath = `${authUser.id}/avatar-${Date.now()}.${ext}`;
+                              const { error: uploadErr } =
+                                await supabase.storage
+                                  .from('avatars')
+                                  .upload(filePath, file, { upsert: true });
+                              if (uploadErr) throw uploadErr;
+                              await updateProfile({ avatar_url: filePath });
+                              // Invalidate query to fetch fresh data with new signed URL
+                              await queryClient.invalidateQueries({
+                                queryKey: ['profile', authUser.id],
+                              });
+                              toast.success('Avatar updated successfully!');
+                            } catch (err) {
+                              console.error('Avatar upload failed', err);
+                              toast.error('Failed to upload avatar');
+                              queryClient.invalidateQueries({
+                                queryKey: ['profile', authUser.id],
+                              });
+                            } finally {
+                              URL.revokeObjectURL(localImageUrl);
+                              if (e.target) {
+                                (e.target as HTMLInputElement).value = '';
+                              }
+                            }
+                          }}
+                        />
+                        <Button
+                          variant="outline"
+                          size="icon"
+                          onClick={() => avatarInputRef.current?.click()}
+                        >
+                          <Camera className="h-4 w-4" />
+                        </Button>
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="mt-4 md:mt-0 md:mb-2">
+                    <div className="flex items-center space-x-2 mb-2">
+                      <h1 className="text-2xl md:text-3xl font-bold">
+                        {profile.display_name || profile.username}
+                      </h1>
+                      {profile.is_verified && (
+                        <Badge className="starmar-gradient text-white border-0 mt-2">
+                          ✓ Verified
+                        </Badge>
+                      )}
+                    </div>
+                    <p className="text-muted-foreground text-lg">
+                      @{profile.username}
+                    </p>
+                  </div>
+                </div>
+
+                {/* Action Buttons */}
+                <div className="flex items-center space-x-3 mt-4 md:mt-0">
+                  {isOwnProfile ? (
+                    <Button variant="outline" asChild>
+                      <Link to="/settings">Edit Profile</Link>
+                    </Button>
+                  ) : (
+                    <>
+                      <Button
+                        variant={isFollowing ? 'outline' : 'default'}
+                        className={!isFollowing ? 'gradient-button' : ''}
+                        onClick={() =>
+                          toggleFollow({ userId: profile.user_id, isFollowing })
+                        }
+                      >
+                        {isFollowing ? 'Following' : 'Follow'}
+                      </Button>
+                      <Button
+                        variant="outline"
+                        size="icon"
+                        onClick={() => {
+                          createConversation(
+                            { otherUserId: profile.user_id },
+                            {
+                              onSuccess: (conversationId) => {
+                                navigate(`/chat/${conversationId}`);
+                              },
+                              onError: () => {
+                                toast.error('Gagal membuat percakapan');
+                              },
+                            }
+                          );
+                        }}
+                      >
+                        <MessageCircle className="h-4 w-4" />
+                      </Button>
+                      <ProfileMenu
+                        userId={profile.user_id}
+                        username={profile.username}
+                        isOwnProfile={false}
+                        isBanned={profile.is_banned}
+                      />
+                    </>
+                  )}
+                </div>
+              </div>
+
+              {/* Bio & Details */}
+              <div className="mt-6 space-y-4">
+                <p className="text-foreground whitespace-pre-line leading-relaxed">
+                  {profile.bio}
+                </p>
+
+                <div className="flex flex-wrap items-center gap-4 text-sm text-muted-foreground">
+                  {profile.location && (
+                    <div className="flex items-center space-x-1">
+                      <MapPin className="h-4 w-4" />
+                      <span>{profile.location}</span>
+                    </div>
+                  )}
+                  {profile.website && (
+                    <div className="flex items-center space-x-1">
+                      <LinkIcon className="h-4 w-4" />
+                      <a
+                        href={`https://${profile.website}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-primary hover:underline"
+                      >
+                        {profile.website}
+                      </a>
+                    </div>
+                  )}
+                  <div className="flex items-center space-x-1">
+                    <Calendar className="h-4 w-4" />
+                    <span>
+                      Joined{' '}
+                      {format(
+                        new Date(profile.join_date || profile.created_at),
+                        'MMMM yyyy'
+                      )}
+                    </span>
+                  </div>
+                </div>
+
+                {/* Social Media Links */}
+                {(() => {
+                  const socialLinks = (profile as any).social_links;
+                  const links = Array.isArray(socialLinks) ? socialLinks : [];
+                  if (links.length === 0) return null;
+
+                  return (
+                    <div className="flex flex-wrap gap-2 pt-2">
+                      {links.map((link: { platform: string; url: string }, index: number) => (
+                        <a
+                          key={index}
+                          href={link.url.startsWith('http') ? link.url : `https://${link.url}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-muted/50 hover:bg-muted text-sm transition-colors ${getSocialColor(link.platform)}`}
+                          title={link.platform}
+                        >
+                          {getSocialIcon(link.platform, 'h-4 w-4')}
+                          <span className="capitalize">{link.platform}</span>
+                        </a>
+                      ))}
+                    </div>
+                  );
+                })()}
+
+                {/* Stats - use actual counts from followers table */}
+                <ProfileStats userId={profile.user_id} postsCount={posts?.length || 0} onClickFollowers={() => setFollowListType('followers')} onClickFollowing={() => setFollowListType('following')} />
+              </div>
+            </div>
+          </Card>
+
+          {/* Content Tabs */}
+          <Tabs defaultValue="posts" className="space-y-6">
+            <TabsList className="grid w-full grid-cols-3 lg:w-96 mx-auto">
+              <TabsTrigger
+                value="posts"
+                className="flex items-center space-x-2"
+              >
+                <Grid3X3 className="h-4 w-4" />
+                <span>Posts</span>
+              </TabsTrigger>
+              <TabsTrigger
+                value="saved"
+                className="flex items-center space-x-2"
+              >
+                <Bookmark className="h-4 w-4" />
+                <span>Saved</span>
+              </TabsTrigger>
+              <TabsTrigger
+                value="liked"
+                className="flex items-center space-x-2"
+              >
+                <Heart className="h-4 w-4" />
+                <span>Liked</span>
+              </TabsTrigger>
+            </TabsList>
+
+            <TabsContent value="posts" className="space-y-6">
+              {!showContent ? (
+                <div className="text-center py-12">
+                  <Lock className="h-12 w-12 text-muted-foreground mx-auto mb-4" />
+                  <h3 className="text-lg font-semibold mb-2">
+                    This account is private
+                  </h3>
+                  <p className="text-muted-foreground">
+                    Follow this account to see their posts.
+                  </p>
+                </div>
+              ) : userPosts.length > 0 ? (
+                <PostGrid
+                  posts={userPosts}
+                  onPostClick={(post) => setSelectedPost(post)}
+                />
+              ) : (
+                <div className="text-center py-12">
+                  <Grid3X3 className="h-12 w-12 text-muted-foreground mx-auto mb-4" />
+                  <h3 className="text-lg font-semibold mb-2">Belum ada post</h3>
+                  <p className="text-muted-foreground">
+                    Pengguna ini belum membuat postingan apa pun.
+                  </p>
+                </div>
+              )}
+            </TabsContent>
+
+            <TabsContent value="saved" className="space-y-6">
+              {bookmarkedPosts.length > 0 ? (
+                <PostGrid
+                  posts={bookmarkedPosts as any}
+                  onPostClick={(post) => setSelectedPost(post)}
+                />
+              ) : (
+                <div className="text-center py-12">
+                  <Bookmark className="h-12 w-12 text-muted-foreground mx-auto mb-4" />
+                  <h3 className="text-lg font-semibold mb-2">
+                    No saved posts yet
+                  </h3>
+                  <p className="text-muted-foreground">
+                    Posts you save will appear here for easy access later.
+                  </p>
+                </div>
+              )}
+            </TabsContent>
+
+            <TabsContent value="liked" className="space-y-6">
+              {likedPosts.length > 0 ? (
+                <PostGrid
+                  posts={likedPosts as any}
+                  onPostClick={(post) => setSelectedPost(post)}
+                />
+              ) : (
+                <div className="text-center py-12">
+                  <Heart className="h-12 w-12 text-muted-foreground mx-auto mb-4" />
+                  <h3 className="text-lg font-semibold mb-2">
+                    No liked posts yet
+                  </h3>
+                  <p className="text-muted-foreground">
+                    Posts you like will appear here so you can find them again.
+                  </p>
+                </div>
+              )}
+            </TabsContent>
+          </Tabs>
+        </div>
+      </main>
+
+      {/* Post Detail Modal */}
+      <PostDetailModal
+        post={selectedPost}
+        isOpen={!!selectedPost}
+        onClose={() => setSelectedPost(null)}
+      />
+
+      {/* Follow List Modal */}
+      {followListType && (
+        <FollowListModal
+          isOpen={!!followListType}
+          onClose={() => setFollowListType(null)}
+          userId={profile.user_id}
+          type={followListType}
+        />
+      )}
+    </div>
+  );
+};
+
+const Profile = () => {
+  const { userId } = useParams<{ userId?: string }>();
+  const { user: authUser } = useAuth();
+
+  const profileId = userId || authUser?.id;
+
+  const { data: profile, isLoading, error } = useProfile(profileId);
+
+  return (
+    <ProfilePageContent profile={profile} isLoading={isLoading} error={error} />
+  );
+};
+
+export default Profile;
